@@ -1,0 +1,37 @@
+appId: dev.juwel.adoboard
+productName: ADO Board
+directories:
+  output: release
+# electron-vite bundles everything; main and preload only need electron and node built-ins.
+files:
+  - out/**/*
+  - package.json
+  - '!node_modules/**/*'
+asar: true
+npmRebuild: false
+mac:
+  icon: build/icon.icns
+  category: public.app-category.developer-tools
+  # No spaces: GitHub renames uploaded assets with spaces, and latest-mac.yml must name the zip exactly.
+  artifactName: ADO-Board-${version}-${arch}.${ext}
+  target:
+    - target: dmg
+      arch: arm64
+    # The zip (+ latest-mac.yml) is what electron-updater downloads.
+    - target: zip
+      arch: arm64
+  # Signed with a "Developer ID Application" identity when one is available (keychain, or CSC_LINK in CI),
+  # otherwise ad-hoc; see scripts/sign-mac.cjs. Notarized only when APPLE_API_KEY, APPLE_API_KEY_ID and
+  # APPLE_API_ISSUER are set.
+  sign: scripts/sign-mac.cjs
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+dmg:
+  writeUpdateInfo: false
+# Where electron-updater looks for updates. Uploading is semantic-release's job (release.config.cjs).
+publish:
+  provider: github
+  owner: juwel-development
+  repo: P-ADO-Board

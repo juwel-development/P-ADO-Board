@@ -1,0 +1,116 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # What *would* be released, computed and reported without publishing anything, so the version is on
+  # screen before anyone is asked to approve it.
+  preview:
+    name: preview
+    runs-on: ubuntu-latest
+    permissions:
+      # semantic-release verifies it *could* push before it reports anything, even under --dry-run.
+      # The dry run stops before prepare/publish, so no tag or commit is pushed.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # semantic-release reads the full tag and commit history; a shallow clone looks like a first release.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Compute the next version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          # Only the two plugins that decide the version: exec would build the app and the rest need no run here.
+          npx semantic-release --dry-run \
+            --plugins @semantic-release/commit-analyzer,@semantic-release/release-notes-generator \
+            2>&1 | tee dry-run.log
+          sed -e 's/\x1b\[[0-9;]*m//g' dry-run.log > clean.log
+          version="$(grep -oE 'The next release version is [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' \
+            clean.log | tail -1 | sed 's/The next release version is //' || true)"
+          {
+            echo "## Release preview"
+            if [ -n "$version" ]; then
+              echo "Approving the **release** job builds, signs, notarizes and publishes \`$version\`."
+              if grep -q 'BREAKING CHANGE' clean.log; then
+                echo ""
+                echo "> :warning: This release contains a **breaking change**."
+              fi
+            else
+              echo "No relevant changes since the last tag — approving would publish nothing."
+            fi
+            echo ""
+            echo "<details><summary>semantic-release dry run</summary>"
+            echo ""
+            echo '```'
+            cat clean.log
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: release
+    needs: preview
+    # Signing and notarization need macOS.
+    runs-on: macos-latest
+    # The approval gate: this environment carries a required reviewer, so the job waits until approved.
+    # It MUST exist with that rule; a workflow naming an absent environment gets one with no rules at all.
+    environment: release
+    # Here rather than workflow-wide, so a run waiting for approval doesn't block the next push's preview.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify
+        run: npm run typecheck
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
+      - name: Release
+        # Bumps the version, builds/signs/notarizes (release.config.cjs), tags, uploads, commits the changelog.
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Remove API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
